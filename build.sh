@@ -70,11 +70,43 @@ if ! pkg-config --exists glib-2.0; then
 fi
 
 # ---------------------------------------------------------------------------
+# Locate GEGL internal headers (gegl-op.h).
+#
+# Some distros ship libgegl-dev without the internal gegl-op.h header in the
+# pkg-config Cflags, even though the file is present under /usr/include. We
+# search common locations and add the directory that actually contains it.
+# ---------------------------------------------------------------------------
+GEGL_EXTRA_INCLUDE=""
+for candidate in \
+    /usr/include/gegl-0.4 \
+    /usr/include/gegl-0.4/gegl \
+    /usr/local/include/gegl-0.4 \
+    /usr/local/include/gegl-0.4/gegl \
+    /opt/homebrew/include/gegl-0.4 \
+    /opt/homebrew/include/gegl-0.4/gegl \
+    /mingw64/include/gegl-0.4 \
+    /mingw64/include/gegl-0.4/gegl
+do
+  if [ -f "${candidate}/gegl-op.h" ]; then
+    GEGL_EXTRA_INCLUDE="-I${candidate}"
+    echo "==> Found gegl-op.h in: ${candidate}"
+    break
+  fi
+done
+
+if [ -z "$GEGL_EXTRA_INCLUDE" ]; then
+  echo "WARNING: gegl-op.h not found in any standard location." >&2
+  echo "         The build may fail. Install libgegl-dev / gegl-devel." >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Build the GEGL operation
 # ---------------------------------------------------------------------------
 OUTPUT="mesh-warp.${SO_EXT}"
 echo "==> Building ${OUTPUT} ..."
 gcc -O2 -shared -fPIC mesh-warp.c -o "$OUTPUT" \
+    -I. \
+    $GEGL_EXTRA_INCLUDE \
     $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
 echo "    Built: $OUTPUT"
 echo
