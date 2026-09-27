@@ -2,7 +2,7 @@
 
 ### Download code and binaries for the latest version here
 
-https://github.com/YOUR_USERNAME/gimp-mesh-warp/releases
+https://github.com/hexsian/gimp-mesh-warp
 
 ---
 
