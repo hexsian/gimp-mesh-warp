@@ -1,0 +1,12 @@
+*.so
+*.dll
+*.dylib
+*.o
+*.a
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+build/
+dist/
