@@ -2,7 +2,7 @@
 
 ### Download code and binaries for the latest version here
 
-https://github.com/hexsian/gimp-mesh-warp
+https://github.com/hexsian/gimp-mesh-warp/releases
 
 ---
 
@@ -17,7 +17,6 @@ Binaries are currently provided for Linux only. Windows and macOS users must com
 ---
 
 ### Third party GEGL GIMP Plugin — Mesh Warp
-====================================================
 
 This is a third-party GEGL filter plugin for GIMP 3.2+, packaged as two pieces. The first is a small C GEGL operation called `custom:mesh-warp` which performs the actual backward pixel remap. The second is a Python plugin that provides the interactive dialog, canvas, grid editing, and puppet pins.
 
