@@ -1019,11 +1019,6 @@ class MeshWarpDialog(Gtk.Dialog):
         )
         self._invalidate_spatial()
         self.drawing_area.queue_draw()
-        self.grid = laplacian_smooth_grid(
-            self.grid, self.cols, self.rows, factor=0.4, lock_boundary=self.lock_boundary
-        )
-        self._invalidate_spatial()
-        self.drawing_area.queue_draw()
 
     def on_reset_clicked(self, btn):
         self.pins = []
@@ -1795,8 +1790,16 @@ class MeshWarpDialog(Gtk.Dialog):
                     self.drawable.resize(cur_w + add_l + add_r,
                                          cur_h + add_t + add_b,
                                          add_l, add_t)
-                    pad_left = want_l
-                    pad_top  = want_t
+                    # pad_left/pad_top must never shrink here: auto-expand
+                    # only ever grows the physical canvas, so if this edit
+                    # needs less padding on one axis while another axis
+                    # still forces the resize block to run, the OLD padding
+                    # is still physically present and must stay recorded -
+                    # otherwise grid_json gets serialized with an offset
+                    # that no longer matches the real canvas, misaligning
+                    # the warp. (Bug found and fixed 2026-09-27.)
+                    pad_left = max(pad_left, want_l)
+                    pad_top  = max(pad_top, want_t)
                     self.pad_left = pad_left
                     self.pad_top  = pad_top
 
