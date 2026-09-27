@@ -114,6 +114,10 @@ Build the operation with:
 
 After copying the file into the GEGL folder, macOS Gatekeeper may block it. Right-click the `.dylib` in Finder and select Open, then approve the security prompt. To batch-approve everything in the folder, run `cd ~/Library/Application\ Support/GEGL/0.4/plug-ins/` and then `sudo xattr -rd com.apple.quarantine *.dylib`. Then restart GIMP.
 
+> **Note for Linux / macOS**: Ensure the script is executable:
+> ```bash
+> chmod +x mesh-warp/mesh-warp.py
+> ```
 ---
 
 ## How to compile
