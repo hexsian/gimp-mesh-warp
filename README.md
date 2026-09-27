@@ -4,6 +4,10 @@
 
 https://github.com/hexsian/gimp-mesh-warp/releases
 
+Demo: 
+
+https://github.com/user-attachments/assets/8fe7900e-7de2-4509-82cb-0e841ce57e48
+
 ---
 
 ### NEWS
