@@ -2,14 +2,14 @@
  * mesh-warp.c - Optimized GEGL operation & ctypes preview/mesh core.
  *
  * BUILD (Linux / macOS):
- *   gcc -O3 -ftree-vectorize -fno-math-errno -fno-trapping-math -shared -fPIC -fopenmp \
- *       -I. mesh-warp.c -o mesh-warp.so -lm \
- *       $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
+    gcc -O3 -ftree-vectorize -fno-math-errno -fno-trapping-math -shared -fPIC -fopenmp \
+        -I. mesh-warp.c -o mesh-warp.so -lm \
+        $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
  *
  * BUILD (Windows MinGW-w64 / MSYS2):
- *   gcc -O3 -shared -Wl,--export-all-symbols -fopenmp \
- *       -I. mesh-warp.c -o mesh-warp.dll \
- *       $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
+	gcc -O3 -shared -Wl,--export-all-symbols \
+	    -I. mesh-warp.c -o mesh-warp.dll \
+	    $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
  */
 
 #ifdef GEGL_PROPERTIES
