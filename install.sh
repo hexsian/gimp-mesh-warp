@@ -8,7 +8,6 @@
 #   chmod +x install.sh
 #   ./install.sh
 #
-# For Windows, use build.sh inside an MSYS2 MinGW shell.
 
 set -euo pipefail
 
@@ -92,7 +91,7 @@ echo
 echo "  Next steps:"
 echo "    1. Restart GIMP."
 echo "    2. Open an image."
-echo "    3. Filters → Distorts → Mesh Warp…"
+echo "    3. Filters → Deform → Mesh Warp…"
 echo
 echo "  If the filter does not appear, open GIMP's Error Console"
 echo "  (Windows → Dockable Dialogs → Error Console) and look for"
