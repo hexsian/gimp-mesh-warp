@@ -4,8 +4,10 @@
 Mesh Warp & Transform Presets Plugin for GIMP 3.0 / 3.2+
 =========================================================
 Heavy lifting (preview warp, RBF, resample, smooth) is done in C
-(mesh-warp.c -> mesh-warp.so) and called via ctypes.
+(mesh-warp.c -> mesh-warp.so / mesh-warp.dll) and called via ctypes.
 Python handles only the UI, state and event dispatch. Overlays stay in Cairo.
+No NumPy needed: grids are flat ctypes double arrays [x0,y0,x1,y1,...] and
+pixel buffers are Cairo surfaces handed to C by address.
 
 Author: Antigravity
 License: GNU General Public License v3 or later
@@ -33,38 +35,59 @@ try:
 except ImportError:
     from gi.repository import cairo
 
-try:
-    import numpy as np
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
-
-
 # ---------------------------------------------------------------------------
 # Load C core
 # ---------------------------------------------------------------------------
 
-def _load_core():
-    gegl_so = os.path.join(
-        GLib.get_user_data_dir(), "gegl-0.4", "plug-ins", "mesh-warp.so"
-    )
-    local_so = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "mesh-warp.so"
-    )
-    for path in (local_so, gegl_so):
-        if os.path.exists(path):
-            return ctypes.CDLL(path)
-    try:
-        return ctypes.CDLL("mesh-warp.so")
-    except OSError:
-        raise RuntimeError(
-            "mesh-warp.so not found in plugin folder or gegl-0.4/plug-ins."
-        )
+def _core_names():
+    if os.name == "nt":
+        return ["mesh-warp.dll"]
+    if sys.platform == "darwin":
+        return ["mesh-warp.so", "mesh-warp.dylib"]
+    return ["mesh-warp.so"]
 
+
+def _core_dirs():
+    here = os.path.dirname(os.path.realpath(__file__))
+    dirs = [here, os.path.join(GLib.get_user_data_dir(), "gegl-0.4", "plug-ins")]
+    if os.name == "nt":
+        la = os.environ.get("LOCALAPPDATA")
+        if la:
+            dirs.append(os.path.join(la, "gegl-0.4", "plug-ins"))
+    seen, out = set(), []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def _load_core():
+    for d in _core_dirs():
+        for name in _core_names():
+            path = os.path.join(d, name)
+            if not os.path.exists(path):
+                continue
+            if hasattr(os, "add_dll_directory"):      # Windows: let deps next to the DLL resolve
+                try:
+                    os.add_dll_directory(d)
+                except Exception:
+                    pass
+            return ctypes.CDLL(path)
+    raise RuntimeError(
+        "%s not found in the plugin folder or gegl-0.4/plug-ins." % _core_names()[0]
+    )
+
+
+_core = None
+_CORE_ERROR = None
+try:
+    _core = _load_core()
+except Exception as _e:                               # reported from run(), not at import
+    _CORE_ERROR = str(_e)
 
 _HAS_VP_RENDER = False
-if HAS_NUMPY:
-    _core = _load_core()
+if _core is not None:
     try:
         _core.mesh_omp_max_threads.argtypes = []
         _core.mesh_omp_max_threads.restype = ctypes.c_int
@@ -76,11 +99,10 @@ if HAS_NUMPY:
         pass
 
     _dp   = ctypes.POINTER(ctypes.c_double)
-    _u32p = ctypes.POINTER(ctypes.c_uint32)
 
     _core.mesh_preview_render.argtypes = [
-        _u32p, ctypes.c_int, ctypes.c_int,
-        _u32p, ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
         _dp, _dp, ctypes.c_int, ctypes.c_int,
         ctypes.c_double, ctypes.c_double,
         ctypes.c_double, ctypes.c_double,
@@ -90,8 +112,8 @@ if HAS_NUMPY:
 
     if hasattr(_core, "mesh_preview_render_vp"):
         _core.mesh_preview_render_vp.argtypes = [
-            _u32p, ctypes.c_int, ctypes.c_int,
-            _u32p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
             _dp, _dp, ctypes.c_int, ctypes.c_int,
             ctypes.c_double, ctypes.c_double,
             ctypes.c_double, ctypes.c_double,
@@ -112,6 +134,32 @@ if HAS_NUMPY:
     _core.mesh_smooth_grid.argtypes = [
         _dp, ctypes.c_int, ctypes.c_int, ctypes.c_double, ctypes.c_int]
     _core.mesh_smooth_grid.restype = None
+
+
+def _new_grid(n_verts):
+    """Zeroed flat grid [x0, y0, x1, y1, ...] with n_verts vertices."""
+    return (ctypes.c_double * (2 * n_verts))()
+
+
+def _copy_grid(g):
+    return type(g).from_buffer_copy(g)
+
+
+def _grid_from_pairs(pairs):
+    flat = []
+    for p in pairs:
+        flat.append(float(p[0]))
+        flat.append(float(p[1]))
+    return (ctypes.c_double * len(flat))(*flat)
+
+
+def _surface_ptr(surf):
+    """Address of a Cairo ARGB32 image surface's pixel data (stride must be w*4)."""
+    if surf.get_stride() != surf.get_width() * 4:
+        raise RuntimeError("unexpected cairo stride")
+    surf.flush()
+    mv = surf.get_data()
+    return ctypes.addressof(ctypes.c_char.from_buffer(mv))
 
 
 PLUG_IN_PROC   = "plug-in-mesh-warp"
@@ -254,8 +302,7 @@ class MeshWarpDialog(Gtk.Dialog):
         self._redo_stack = []
 
         self._drag_pushed = False
-        self._drag_dx_mul = None
-        self._drag_dy_mul = None
+        self._drag_active = None
         self._drag_timer = None
         self._pending_drag_xy = None
         self._last_drag_t = 0.0
@@ -301,25 +348,25 @@ class MeshWarpDialog(Gtk.Dialog):
         self._preview_key      = None
         self._preview_sx_scale = 1.0
         self._preview_sy_scale = 1.0
-        self._preview_np       = None
+        self._preview_ptr      = None
 
         self._checker_surf = None
         self._checker_pattern = self._make_checker_pattern()
 
         # ---- warp output surface ----
-        self._dst_buf     = None
+        self._dst_ptr     = None
         self._dst_surface = None
         self._dst_w       = 0
         self._dst_h       = 0
 
-        # ---- mesh (numpy) ----
+        # ---- mesh (flat ctypes double arrays) ----
         self.cols = loaded_state['cols'] if loaded_state else 4
         self.rows = loaded_state['rows'] if loaded_state else 4
         self.orig_grid = None
         self.grid = None
         self.init_mesh()
         if loaded_state is not None:
-            self.grid = np.array(loaded_state['grid'], dtype=np.float64)
+            self.grid = _grid_from_pairs(loaded_state['grid'])
 
         # ---- puppet pins ----
         self.mode = loaded_state.get('mode', self.MODE_GRID) if loaded_state else self.MODE_GRID
@@ -395,15 +442,28 @@ class MeshWarpDialog(Gtk.Dialog):
     # Grid init & Undo/Redo
     # ==================================================================
 
+    def _nv(self):
+        return (self.cols + 1) * (self.rows + 1)
+
     def rebuild_orig_mesh(self):
-        xs = np.linspace(0.0, float(self.width), self.cols + 1, dtype=np.float64)
-        ys = np.linspace(0.0, float(self.height), self.rows + 1, dtype=np.float64)
-        gx, gy = np.meshgrid(xs, ys)
-        self.orig_grid = np.column_stack((gx.ravel(), gy.ravel())).copy()
+        cols, rows = self.cols, self.rows
+        g = _new_grid((cols + 1) * (rows + 1))
+        k = 0
+        for r in range(rows + 1):
+            y = float(self.height) * r / rows
+            for c in range(cols + 1):
+                g[k] = float(self.width) * c / cols
+                g[k + 1] = y
+                k += 2
+        self.orig_grid = g
+
+    def _reset_vertex(self, i):
+        self.grid[2 * i] = self.orig_grid[2 * i]
+        self.grid[2 * i + 1] = self.orig_grid[2 * i + 1]
 
     def init_mesh(self):
         self.rebuild_orig_mesh()
-        self.grid = self.orig_grid.copy()
+        self.grid = _copy_grid(self.orig_grid)
         self._mesh_seq = getattr(self, "_mesh_seq", 0) + 1
 
     def _capture_state(self):
@@ -411,7 +471,7 @@ class MeshWarpDialog(Gtk.Dialog):
             'cols': int(self.cols),
             'rows': int(self.rows),
             'mode': int(self.mode),
-            'grid': self.grid.copy(),
+            'grid': _copy_grid(self.grid),
             'pins': [p.to_list() for p in self.pins],
         }
 
@@ -428,7 +488,7 @@ class MeshWarpDialog(Gtk.Dialog):
             self.rows = st['rows']
             self.mode = st['mode']
             self.rebuild_orig_mesh()
-            self.grid = st['grid'].copy()
+            self.grid = _copy_grid(st['grid'])
             self.pins = [Pin.from_list(p) for p in st['pins']]
             self.selected_indices.clear()
             self.active_index = None
@@ -730,31 +790,33 @@ class MeshWarpDialog(Gtk.Dialog):
 
     def _rebuild_grid_from_pins(self):
         if not self.pins:
-            self.grid = self.orig_grid.copy()
+            self.grid = _copy_grid(self.orig_grid)
         else:
-            n_v = self.orig_grid.shape[0]
-            pins_arr = np.array([p.to_list() for p in self.pins], dtype=np.float64)
-            out = np.empty_like(self.orig_grid)
+            n_v = len(self.orig_grid) // 2
+            flat = []
+            for p in self.pins:
+                flat.extend(p.to_list())
+            pins_arr = (ctypes.c_double * len(flat))(*flat)
+            out = _new_grid(n_v)
             _core.mesh_rbf_build(
-                self.orig_grid.ctypes.data_as(_dp), n_v,
-                pins_arr.ctypes.data_as(_dp), len(self.pins),
+                self.orig_grid, n_v,
+                pins_arr, len(self.pins),
                 float(self.puppet_radius),
-                out.ctypes.data_as(_dp))
+                out)
             self.grid = out
         self._mesh_seq += 1
         self.drawing_area.queue_draw()
 
     def _resample_grid(self, new_cols, new_rows):
-        n_new = (new_cols + 1) * (new_rows + 1)
-        out = np.empty((n_new, 2), dtype=np.float64)
+        out = _new_grid((new_cols + 1) * (new_rows + 1))
         _core.mesh_resample_grid(
-            self.grid.ctypes.data_as(_dp), self.cols, self.rows,
-            out.ctypes.data_as(_dp), new_cols, new_rows)
+            self.grid, self.cols, self.rows,
+            out, new_cols, new_rows)
         return out
 
     def _smooth_grid(self):
         _core.mesh_smooth_grid(
-            self.grid.ctypes.data_as(_dp), self.cols, self.rows,
+            self.grid, self.cols, self.rows,
             0.4, 1 if self.lock_boundary else 0)
         self._mesh_seq += 1
 
@@ -763,15 +825,17 @@ class MeshWarpDialog(Gtk.Dialog):
         src_surf = self._preview_surface
         src_w, src_h = src_surf.get_width(), src_surf.get_height()
 
-        if self._preview_np is None:
-            self._preview_np = np.frombuffer(src_surf.get_data(), dtype=np.uint32)
+        if self._preview_ptr is None:
+            self._preview_ptr = _surface_ptr(src_surf)
+
+        self._dst_surface.flush()
 
         if use_vp and _HAS_VP_RENDER:
             _core.mesh_preview_render_vp(
-                self._dst_buf.ctypes.data_as(_u32p), self._dst_w, self._dst_h,
-                self._preview_np.ctypes.data_as(_u32p), src_w, src_h,
-                self.grid.ctypes.data_as(_dp),
-                self.orig_grid.ctypes.data_as(_dp),
+                self._dst_ptr, self._dst_w, self._dst_h,
+                self._preview_ptr, src_w, src_h,
+                self.grid,
+                self.orig_grid,
                 self.cols, self.rows,
                 float(self.pad_left), float(self.pad_top),
                 self._preview_sx_scale, self._preview_sy_scale,
@@ -780,10 +844,10 @@ class MeshWarpDialog(Gtk.Dialog):
                 1 if self.show_checker else 0)
         else:
             _core.mesh_preview_render(
-                self._dst_buf.ctypes.data_as(_u32p), self._dst_w, self._dst_h,
-                self._preview_np.ctypes.data_as(_u32p), src_w, src_h,
-                self.grid.ctypes.data_as(_dp),
-                self.orig_grid.ctypes.data_as(_dp),
+                self._dst_ptr, self._dst_w, self._dst_h,
+                self._preview_ptr, src_w, src_h,
+                self.grid,
+                self.orig_grid,
                 self.cols, self.rows,
                 float(self.pad_left), float(self.pad_top),
                 self._preview_sx_scale, self._preview_sy_scale,
@@ -838,15 +902,14 @@ class MeshWarpDialog(Gtk.Dialog):
         self._preview_key      = key
         self._preview_sx_scale = surf.get_width()  / self.canvas_w
         self._preview_sy_scale = surf.get_height() / self.canvas_h
-        self._preview_np       = None
+        self._preview_ptr      = None
 
     def _ensure_dst_surface(self, w, h):
-        if self._dst_buf is not None and self._dst_w == w and self._dst_h == h:
+        if self._dst_surface is not None and self._dst_w == w and self._dst_h == h:
             return
         self._dst_w, self._dst_h = w, h
-        self._dst_buf = np.zeros((h, w), dtype=np.uint32)
-        self._dst_surface = cairo.ImageSurface.create_for_data(
-            self._dst_buf, cairo.FORMAT_ARGB32, w, h, w * 4)
+        self._dst_surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+        self._dst_ptr = _surface_ptr(self._dst_surface)
 
     # ==================================================================
     # Mode / preset handlers
@@ -942,8 +1005,8 @@ class MeshWarpDialog(Gtk.Dialog):
                     self.current_preset, un, vn,
                     bend=b, h_dist=hd, v_dist=vd, is_vertical=iv)
                 idx = r * (self.cols + 1) + c
-                self.grid[idx, 0] = uw * self.width
-                self.grid[idx, 1] = vw * self.height
+                self.grid[2 * idx] = uw * self.width
+                self.grid[2 * idx + 1] = vw * self.height
         self._mesh_seq += 1
         self.drawing_area.queue_draw()
 
@@ -1047,7 +1110,7 @@ class MeshWarpDialog(Gtk.Dialog):
             self._rebuild_grid_from_pins()
         else:
             self.set_preset_to_custom()
-            self.grid = self.orig_grid.copy()
+            self.grid = _copy_grid(self.orig_grid)
             self.selected_indices.clear()
             self._mesh_seq += 1
             self.drawing_area.queue_draw()
@@ -1094,13 +1157,18 @@ class MeshWarpDialog(Gtk.Dialog):
     def find_vertex_at_screen(self, sx, sy, hit_radius=10.0):
         if self.mode != self.MODE_GRID or self.grid is None or len(self.grid) == 0:
             return None
-        px = (self.grid[:, 0] + self.pad_left) * self.zoom + self.pan_x
-        py = (self.grid[:, 1] + self.pad_top)  * self.zoom + self.pan_y
-        dsq = (px - sx) ** 2 + (py - sy) ** 2
-        best = int(np.argmin(dsq))
-        if dsq[best] <= hit_radius * hit_radius:
-            return best
-        return None
+        g = self.grid
+        z, ox, oy = self.zoom, self.pan_x + self.pad_left * self.zoom, self.pan_y + self.pad_top * self.zoom
+        best = None
+        best_d = hit_radius * hit_radius
+        for i in range(len(g) // 2):
+            dx = g[2 * i] * z + ox - sx
+            dy = g[2 * i + 1] * z + oy - sy
+            d = dx * dx + dy * dy
+            if d <= best_d:
+                best_d = d
+                best = i
+        return best
 
     def find_pin_at_screen(self, sx, sy, hit_radius=14.0):
         if self.mode != self.MODE_PUPPET:
@@ -1134,10 +1202,10 @@ class MeshWarpDialog(Gtk.Dialog):
     # ==================================================================
 
     def _prepare_grid_drag(self):
-        n = len(self.grid)
-        direct_w = np.zeros(n, dtype=np.float64)
+        n = len(self.grid) // 2
+        direct_w = [0.0] * n
         start = self.drag_start_grid
-        ax, ay = start[self.active_index]
+        ax, ay = start[2 * self.active_index], start[2 * self.active_index + 1]
         radius = self.falloff_radius
 
         for i in range(n):
@@ -1146,18 +1214,17 @@ class MeshWarpDialog(Gtk.Dialog):
             if i in self.selected_indices:
                 direct_w[i] = 1.0
             elif self.use_falloff:
-                ox, oy = start[i]
+                ox, oy = start[2 * i], start[2 * i + 1]
                 d = math.hypot(ox - ax, oy - ay)
                 if d <= radius:
                     direct_w[i] = 0.5 * (1.0 + math.cos(math.pi * d / radius))
 
         if self.symmetry_mode == 0:
-            self._drag_dx_mul = direct_w
-            self._drag_dy_mul = direct_w.copy()
+            self._drag_active = [(i, w, w) for i, w in enumerate(direct_w) if w != 0.0]
             return
 
-        dx_mul = np.zeros(n, dtype=np.float64)
-        dy_mul = np.zeros(n, dtype=np.float64)
+        dx_mul = [0.0] * n
+        dy_mul = [0.0] * n
         ac = self.active_index % (self.cols + 1)
         ar = self.active_index // (self.cols + 1)
 
@@ -1193,8 +1260,8 @@ class MeshWarpDialog(Gtk.Dialog):
                         dx_mul[mir] =  w
                         dy_mul[mir] = -w
 
-        self._drag_dx_mul = dx_mul
-        self._drag_dy_mul = dy_mul
+        self._drag_active = [(i, dx_mul[i], dy_mul[i]) for i in range(n)
+                             if dx_mul[i] != 0.0 or dy_mul[i] != 0.0]
 
     def _apply_drag_xy(self, sx, sy):
         if self.is_dragging_pins and self.active_pin_index is not None:
@@ -1215,8 +1282,11 @@ class MeshWarpDialog(Gtk.Dialog):
             cur_wx, cur_wy = self.screen_to_world(sx, sy)
             dx = cur_wx - self.drag_mouse_start[0]
             dy = cur_wy - self.drag_mouse_start[1]
-            self.grid[:, 0] = self.drag_start_grid[:, 0] + self._drag_dx_mul * dx
-            self.grid[:, 1] = self.drag_start_grid[:, 1] + self._drag_dy_mul * dy
+            g = self.grid
+            s = self.drag_start_grid
+            for i, mx, my in (self._drag_active or ()):
+                g[2 * i] = s[2 * i] + mx * dx
+                g[2 * i + 1] = s[2 * i + 1] + my * dy
             self._mesh_seq += 1
             self.drawing_area.queue_draw()
 
@@ -1285,10 +1355,10 @@ class MeshWarpDialog(Gtk.Dialog):
             if hit is not None:
                 self._push_undo()
                 self.set_preset_to_custom()
-                self.grid[hit] = self.orig_grid[hit]
+                self._reset_vertex(hit)
                 mirror = self.get_mirror_vertex_index(hit)
-                if mirror is not None and mirror < len(self.grid):
-                    self.grid[mirror] = self.orig_grid[mirror]
+                if mirror is not None and mirror < self._nv():
+                    self._reset_vertex(mirror)
                 self._mesh_seq += 1
                 self.drawing_area.queue_draw()
             return True
@@ -1314,7 +1384,7 @@ class MeshWarpDialog(Gtk.Dialog):
                 self._drag_pushed = False
                 wx, wy = self.screen_to_world(event.x, event.y)
                 self.drag_mouse_start = (wx, wy)
-                self.drag_start_grid = self.grid.copy()
+                self.drag_start_grid = _copy_grid(self.grid)
                 self._prepare_grid_drag()
                 self.drawing_area.queue_draw()
                 return True
@@ -1351,18 +1421,17 @@ class MeshWarpDialog(Gtk.Dialog):
             self.is_dragging_points = False
             self.active_index = None
             self._drag_pushed = False
-            self._drag_dx_mul = None
-            self._drag_dy_mul = None
+            self._drag_active = None
         if event.button == 1 and self.is_box_selecting:
             self.is_box_selecting = False
             bx0 = min(self.box_start[0], self.box_current[0])
             bx1 = max(self.box_start[0], self.box_current[0])
             by0 = min(self.box_start[1], self.box_current[1])
             by1 = max(self.box_start[1], self.box_current[1])
-            for i in range(len(self.grid)):
+            for i in range(self._nv()):
                 if self.lock_boundary and self.is_boundary_vertex(i):
                     continue
-                wx, wy = self.grid[i]
+                wx, wy = self.grid[2 * i], self.grid[2 * i + 1]
                 if bx0 <= wx <= bx1 and by0 <= wy <= by1:
                     self.selected_indices.add(i)
         self.drawing_area.queue_draw()
@@ -1444,7 +1513,7 @@ class MeshWarpDialog(Gtk.Dialog):
                 self._push_undo()
                 self.set_preset_to_custom()
                 for idx in self.selected_indices:
-                    self.grid[idx] = self.orig_grid[idx]
+                    self._reset_vertex(idx)
                 self._mesh_seq += 1
                 self.drawing_area.queue_draw()
             return True
@@ -1568,15 +1637,15 @@ class MeshWarpDialog(Gtk.Dialog):
 
         for r in range(rows + 1):
             base = r * (cols + 1)
-            tmp_cr.move_to(float(g[base, 0]), float(g[base, 1]))
+            tmp_cr.move_to(g[2 * base], g[2 * base + 1])
             for c in range(1, cols + 1):
-                tmp_cr.line_to(float(g[base + c, 0]), float(g[base + c, 1]))
+                tmp_cr.line_to(g[2 * (base + c)], g[2 * (base + c) + 1])
 
         for c in range(cols + 1):
-            tmp_cr.move_to(float(g[c, 0]), float(g[c, 1]))
+            tmp_cr.move_to(g[2 * c], g[2 * c + 1])
             for r in range(1, rows + 1):
                 idx = r * (cols + 1) + c
-                tmp_cr.line_to(float(g[idx, 0]), float(g[idx, 1]))
+                tmp_cr.line_to(g[2 * idx], g[2 * idx + 1])
 
         path = tmp_cr.copy_path()
         tmp_surf.finish()
@@ -1607,7 +1676,7 @@ class MeshWarpDialog(Gtk.Dialog):
         if (self.mode == self.MODE_GRID and self.use_falloff and
                 (self.active_index is not None or self.hovered_index is not None)):
             ci = self.active_index if self.active_index is not None else self.hovered_index
-            cx, cy = self.grid[ci]
+            cx, cy = self.grid[2 * ci], self.grid[2 * ci + 1]
             cr.save()
             cr.set_source_rgba(1.0, 0.8, 0.1, 0.3)
             cr.set_line_width(max(1.0, 1.5 / self.zoom))
@@ -1620,7 +1689,7 @@ class MeshWarpDialog(Gtk.Dialog):
             radius = max(3.5, 5.0 / self.zoom)
             if fast:
                 if self.active_index is not None:
-                    gx, gy = self.grid[self.active_index]
+                    gx, gy = self.grid[2 * self.active_index], self.grid[2 * self.active_index + 1]
                     cr.set_source_rgba(0.0, 0.0, 0.0, 0.75)
                     cr.arc(gx, gy, radius + 1.5 / self.zoom, 0, 2 * math.pi)
                     cr.fill()
@@ -1628,8 +1697,8 @@ class MeshWarpDialog(Gtk.Dialog):
                     cr.arc(gx, gy, radius, 0, 2 * math.pi)
                     cr.fill()
             else:
-                for i in range(len(self.grid)):
-                    gx, gy = self.grid[i]
+                for i in range(self._nv()):
+                    gx, gy = self.grid[2 * i], self.grid[2 * i + 1]
                     is_sel = i in self.selected_indices
                     is_act = (i == self.active_index)
                     is_hov = (i == self.hovered_index)
@@ -1718,10 +1787,10 @@ class MeshWarpDialog(Gtk.Dialog):
             except Exception:
                 pass
 
-            gmin_x = float(self.grid[:, 0].min())
-            gmax_x = float(self.grid[:, 0].max())
-            gmin_y = float(self.grid[:, 1].min())
-            gmax_y = float(self.grid[:, 1].max())
+            gxs = self.grid[0::2]
+            gys = self.grid[1::2]
+            gmin_x, gmax_x = float(min(gxs)), float(max(gxs))
+            gmin_y, gmax_y = float(min(gys)), float(max(gys))
 
             pad_left, pad_top = self.pad_left, self.pad_top
             cur_w = self.drawable.get_width()
@@ -1752,8 +1821,8 @@ class MeshWarpDialog(Gtk.Dialog):
             cur_w = self.drawable.get_width()
             cur_h = self.drawable.get_height()
 
-            padded = self.grid + np.array([pad_left, pad_top], dtype=np.float64)
-            grid_json = json.dumps(padded.tolist())
+            padded = [[gxs[i] + pad_left, gys[i] + pad_top] for i in range(len(gxs))]
+            grid_json = json.dumps(padded)
             mode_str = "puppet" if self.mode == self.MODE_PUPPET else "grid"
             pins_json = json.dumps([p.to_list() for p in self.pins])
 
@@ -1827,8 +1896,8 @@ class MeshWarpPlugin(Gimp.PlugIn):
             Gimp.message("Mesh Warp requires exactly one active layer.")
             return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, None)
 
-        if not HAS_NUMPY:
-            Gimp.message("Mesh Warp requires numpy (pip install numpy).")
+        if _core is None:
+            Gimp.message("Mesh Warp: native core missing.\n%s" % _CORE_ERROR)
             return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, None)
 
         try:

@@ -114,7 +114,9 @@ To compile on macOS, install Homebrew first from https://brew.sh/ and then run t
 
 Build the operation with:
 
-`gcc -O2 -shared -fPIC mesh-warp.c -o mesh-warp.dylib $(pkg-config --cflags --libs gegl-0.4 glib-2.0)`
+` gcc -O3 -ftree-vectorize -fno-math-errno -fno-trapping-math -shared -fPIC -fopenmp \
+      -I. mesh-warp.c -o mesh-warp.so -lm \
+      $(pkg-config --cflags --libs gegl-0.4 glib-2.0)`
 
 After copying the file into the GEGL folder, macOS Gatekeeper may block it. Right-click the `.dylib` in Finder and select Open, then approve the security prompt. To batch-approve everything in the folder, run `cd ~/Library/Application\ Support/GEGL/0.4/plug-ins/` and then `sudo xattr -rd com.apple.quarantine *.dylib`. Then restart GIMP.
 
