@@ -54,14 +54,7 @@ One caveat about Puppet mode: it uses a Gaussian RBF, not ARAP (As-Rigid-As-Poss
 
 The `.dll` and `.py` files can either be placed together or in their respective system folders.
 
-### Method 1: All-in-one plugin folder (Recommended)
-Place both `mesh-warp.py` and `mesh-warp.dll` together in:
-
-`C:\Users\USERNAME\AppData\Roaming\GIMP\3.2\plug-ins\mesh-warp\`
-
-*(Create the `mesh-warp` subfolder if it does not exist).*
-
-### Method 2: Separate GEGL folder
+### Separate GEGL folder
 The Python plugin lives here:
 
 `C:\Users\USERNAME\AppData\Roaming\GIMP\3.2\plug-ins\mesh-warp\mesh-warp.py`
