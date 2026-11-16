@@ -1,9 +1,14 @@
 /*
  * mesh-warp.c - Optimized GEGL operation & ctypes preview/mesh core.
  *
- * BUILD:
+ * BUILD (Linux / macOS):
  *   gcc -O3 -ftree-vectorize -fno-math-errno -fno-trapping-math -shared -fPIC -fopenmp \
  *       -I. mesh-warp.c -o mesh-warp.so -lm \
+ *       $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
+ *
+ * BUILD (Windows MinGW-w64 / MSYS2):
+ *   gcc -O3 -shared -Wl,--export-all-symbols -fopenmp \
+ *       -I. mesh-warp.c -o mesh-warp.dll \
  *       $(pkg-config --cflags --libs gegl-0.4 glib-2.0)
  */
 
@@ -42,6 +47,17 @@ property_string (mode, "Mode", "grid")
 
 #ifdef _OPENMP
 #include <omp.h>
+#endif
+
+/* ==================================================================
+ * Export Macro for Windows DLL & Linux/macOS
+ * ================================================================== */
+#ifdef _WIN32
+  #define MW_EXPORT __declspec(dllexport)
+#elif defined(__GNUC__) && __GNUC__ >= 4
+  #define MW_EXPORT __attribute__((visibility("default")))
+#else
+  #define MW_EXPORT
 #endif
 
 /* ==================================================================
@@ -1042,7 +1058,7 @@ mw_render_impl (uint32_t       *dst, int dst_w, int dst_h,
 }
 
 /* Backward warp into ARGB32 buffer sized to the on-screen widget. */
-void
+MW_EXPORT void
 mesh_preview_render (uint32_t       *dst, int dst_w, int dst_h,
                      const uint32_t *src, int src_w, int src_h,
                      const double   *dst_grid,
@@ -1060,7 +1076,7 @@ mesh_preview_render (uint32_t       *dst, int dst_w, int dst_h,
 }
 
 /* 1-pass viewport compositor: window background + checkerboard + warped layer. */
-void
+MW_EXPORT void
 mesh_preview_render_vp (uint32_t       *dst, int dst_w, int dst_h,
                         const uint32_t *src, int src_w, int src_h,
                         const double   *dst_grid,
@@ -1079,7 +1095,7 @@ mesh_preview_render_vp (uint32_t       *dst, int dst_w, int dst_h,
 }
 
 /* Windowed Gaussian RBF: orig_grid + pins -> out_grid. */
-void
+MW_EXPORT void
 mesh_rbf_build (const double *orig_grid, int n_verts,
                 const double *pins, int n_pins,
                 double sigma, double *out_grid)
@@ -1135,7 +1151,7 @@ mesh_rbf_build (const double *orig_grid, int n_verts,
 }
 
 /* Grid resample to new topology. */
-void
+MW_EXPORT void
 mesh_resample_grid (const double *old_grid, int old_cols, int old_rows,
                     double *new_grid, int new_cols, int new_rows)
 {
@@ -1168,7 +1184,7 @@ mesh_resample_grid (const double *old_grid, int old_cols, int old_rows,
 }
 
 /* Laplacian smoothing. */
-void
+MW_EXPORT void
 mesh_smooth_grid (double *grid, int cols, int rows,
                   double factor, int lock_boundary)
 {
@@ -1202,7 +1218,7 @@ mesh_smooth_grid (double *grid, int cols, int rows,
 }
 
 /* Diagnostic: return number of OpenMP threads available at runtime. */
-int
+MW_EXPORT int
 mesh_omp_max_threads (void)
 {
 #ifdef _OPENMP
